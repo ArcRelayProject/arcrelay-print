@@ -635,7 +635,9 @@ fn enumerate_resolutions(printer_name: &str) -> Vec<PrintResolution> {
         )
     };
     values
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(actual.max(0) as usize)
         .filter_map(|pair| {
             if pair[0] <= 0 || pair[1] <= 0 {
