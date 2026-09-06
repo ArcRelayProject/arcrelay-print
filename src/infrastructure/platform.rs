@@ -61,7 +61,7 @@ fn within_render_memory_budget(width: u32, height: u32) -> bool {
 #[cfg(any(target_os = "windows", test))]
 fn composite_rgba_to_bgra(pixels: &mut [u8]) {
     debug_assert_eq!(pixels.len() % 4, 0);
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         let [red, green, blue, alpha] = [pixel[0], pixel[1], pixel[2], pixel[3]];
         let alpha = u16::from(alpha);
         let composite =
