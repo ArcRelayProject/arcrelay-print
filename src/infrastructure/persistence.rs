@@ -98,6 +98,13 @@ impl SqlitePrintStore {
                 .map_err(persistence_error)?;
         }
         self.migrate_client_job_id_scope().await?;
+        // Add these after the legacy table replacement, which drops its indexes.
+        for sql in [
+            "CREATE INDEX IF NOT EXISTS idx_print_jobs_recent ON print_jobs(updated_at_ms DESC, id DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_print_jobs_source_active ON print_jobs(source_device_id, updated_at_ms) WHERE state NOT IN ('completed', 'cancelled', 'failed')",
+        ] {
+            self.db.execute(Statement::from_string(DbBackend::Sqlite, sql)).await.map_err(persistence_error)?;
+        }
         Ok(())
     }
 
@@ -327,6 +334,19 @@ impl QueueBindingRepository for SqlitePrintStore {
 
 #[async_trait]
 impl PrintJobRepository for SqlitePrintStore {
+    async fn count_active_for_source(
+        &self,
+        source: &DeviceId,
+        updated_after_ms: i64,
+    ) -> Result<usize> {
+        let row = self.db.query_one(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "SELECT COUNT(*) AS count FROM print_jobs WHERE source_device_id=? AND updated_at_ms>? AND state NOT IN ('completed', 'cancelled', 'failed')",
+            [source.to_string().into(), updated_after_ms.into()],
+        )).await.map_err(persistence_error)?.ok_or_else(|| PrintError::Persistence("count query returned no row".into()))?;
+        let count: i64 = row.try_get("", "count").map_err(persistence_error)?;
+        Ok(count.max(0) as usize)
+    }
     async fn find(&self, id: &PrintJobId) -> Result<Option<PrintJob>> {
         self.query_payload(
             "SELECT payload_json FROM print_jobs WHERE id = ?",
@@ -463,6 +483,27 @@ mod tests {
         PrintJobRepository::save(&store, &job).await.unwrap();
         assert_eq!(store.list_active().await.unwrap().len(), 1);
         assert_eq!(
+            store
+                .count_active_for_source(&job.source_device_id, 0)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .count_active_for_source(&job.source_device_id, 1)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .count_active_for_source(&DeviceId::parse("other-device").unwrap(), 0)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
             PrintJobRepository::find(&store, &job.id)
                 .await
                 .unwrap()
@@ -474,9 +515,26 @@ mod tests {
         job.cancel(2).unwrap();
         PrintJobRepository::save(&store, &job).await.unwrap();
         assert!(store.list_active().await.unwrap().is_empty());
+        assert_eq!(
+            store
+                .count_active_for_source(&job.source_device_id, 0)
+                .await
+                .unwrap(),
+            0
+        );
         let recent = store.list_recent(10).await.unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].state, PrintJobState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn recent_jobs_use_the_time_index_without_temporary_sorting() {
+        let store = SqlitePrintStore::connect("sqlite::memory:").await.unwrap();
+        let plan = store.db.query_all(Statement::from_string(DbBackend::Sqlite,
+            "EXPLAIN QUERY PLAN SELECT payload_json FROM print_jobs ORDER BY updated_at_ms DESC,id DESC LIMIT 100",
+        )).await.unwrap().into_iter().map(|row| row.try_get::<String>("", "detail").unwrap()).collect::<Vec<_>>().join("\n");
+        assert!(plan.contains("idx_print_jobs_recent"), "{plan}");
+        assert!(!plan.contains("TEMP B-TREE"), "{plan}");
     }
 
     #[tokio::test]
