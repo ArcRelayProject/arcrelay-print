@@ -69,14 +69,11 @@ impl PrintJobService {
         let now = self.clock.now_ms();
         let active_for_source = self
             .jobs
-            .list_active()
-            .await?
-            .into_iter()
-            .filter(|job| {
-                job.source_device_id == source_device_id
-                    && now.saturating_sub(job.updated_at_ms) < ACTIVE_JOB_STALE_AFTER_MS
-            })
-            .count();
+            .count_active_for_source(
+                &source_device_id,
+                now.saturating_sub(ACTIVE_JOB_STALE_AFTER_MS),
+            )
+            .await?;
         if active_for_source >= MAX_ACTIVE_JOBS_PER_DEVICE {
             return Err(PrintError::Conflict(format!(
                 "device already has {MAX_ACTIVE_JOBS_PER_DEVICE} active print jobs"

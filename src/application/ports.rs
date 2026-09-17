@@ -39,6 +39,18 @@ pub trait PrintJobRepository: Send + Sync {
         id: &ClientJobId,
     ) -> Result<Option<PrintJob>>;
     async fn list_active(&self) -> Result<Vec<PrintJob>>;
+    async fn count_active_for_source(
+        &self,
+        source: &crate::domain::DeviceId,
+        updated_after_ms: TimestampMs,
+    ) -> Result<usize> {
+        Ok(self
+            .list_active()
+            .await?
+            .into_iter()
+            .filter(|job| &job.source_device_id == source && job.updated_at_ms > updated_after_ms)
+            .count())
+    }
     async fn list_recent(&self, limit: usize) -> Result<Vec<PrintJob>>;
     async fn save(&self, job: &PrintJob) -> Result<()>;
 }
